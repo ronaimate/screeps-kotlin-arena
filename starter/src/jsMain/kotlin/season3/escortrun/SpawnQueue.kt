@@ -9,8 +9,8 @@ import screeps.api.structures.StructureSpawn
  * **Normál sorrend** (nincs pánik mód):
  *   HARVESTER → WORKER → HARVESTER → HEAVY_WORKER →
  *   (combat ciklus: RANGER → RANGER → HYBRID, ismétlés)
- *   A 9. harci creep után (6 ranger + 3 hybrid) egyszer spawnolja a DIGGER-t,
- *   utána folytatja a RANGER/HYBRID ciklust a maradék 3 slotra (max 12 harci).
+ *   A 10. harci creep után egyszer spawnolja a DIGGER-t, utána korlátlanul
+ *   folytatja a harci ciklust.
  *
  * **Pánik sorrend** (ellenség pánik zónán belül):
  *   HARVESTER → WORKER → WORKER → RANGER → RANGER → HYBRID → (ismétlés)
@@ -30,13 +30,10 @@ object SpawnQueue {
     private const val PANIC_ZONE_BOTTOM_Y = 60
     private const val PANIC_ZONE_RANGE    = 5
 
-    // ── Harci cap ─────────────────────────────────────────────────────────────
-
-    /** Összesen ennyi harci creep spawnolandó (ranger + hybrid + digger). */
-    private const val MAX_COMBAT_CREEPS = 12
+    // ── Digger küszöb ──────────────────────────────────────────────────────────
 
     /** Ennyi harci creep után spawn a Digger (egyszer). */
-    private const val DIGGER_AFTER_COMBAT_COUNT = 9
+    private const val DIGGER_AFTER_COMBAT_COUNT = 5
 
     // ── Spawn sorrendek ───────────────────────────────────────────────────────
 
@@ -176,17 +173,13 @@ object SpawnQueue {
 
     /**
      * Harci spawn logika:
-     * - Ha elértük a 12-es capt → null (ne spawoljon több harci creepet)
-     * - Ha normál módban vagyunk és 9 harci creep van és Digger még nem spawolt → DIGGER
-     * - Egyébként a RANGER/HYBRID ciklus
+     * - 8 harcos után (normál mód) egyszer spawnolja a DIGGER-t
+     * - Utána korlátlanul folytatja a harci ciklust
      */
     private fun nextCombatType(gameplay: Gameplay): CreepType? {
         val combatCount = countCombatCreeps(gameplay)
 
-        // Cap elérve
-        if (combatCount >= MAX_COMBAT_CREEPS) return null
-
-        // Digger: csak normál módban, 9. után, egyszer
+        // Digger: csak normál módban, 10 harcos után, egyszer
         if (!panicModeActive && !diggerSpawned && combatCount >= DIGGER_AFTER_COMBAT_COUNT) {
             return CreepType.DIGGER
         }
@@ -195,10 +188,13 @@ object SpawnQueue {
         return combat[combatCycleIndex % combat.size]
     }
 
-    /** Harci creepek száma: ranger + hybrid + digger összesen. */
+    /** Harci creepek száma: összes combat role összesen. */
     private fun countCombatCreeps(gameplay: Gameplay): Int =
         gameplay.myCreeps.count {
             it.role == Role.COMBAT_RANGER ||
+                    it.role == Role.COMBAT_LIGHT_RANGER ||
+                    it.role == Role.COMBAT_CHEAP_RANGER ||
+                    it.role == Role.COMBAT_SELF_HEAL_RANGER ||
                     it.role == Role.COMBAT_HYBRID ||
                     it.role == Role.COMBAT_DIGGER
         }

@@ -26,65 +26,46 @@ object CombatBehavior {
 
     private const val KITE_DANGER_RANGE = 5
     private const val OPTIMAL_RANGE     = 3
-    private const val ENGAGE_RANGE      = 10
+    private const val ENGAGE_RANGE      = 20
     private const val RALLY_REACHED_RANGE = 4
     private const val COHESION_MAX_SPREAD = 8
 
     fun execute(creep: Creep, gameplay: Gameplay) {
         val rally = if (gameplay.isTopSide) pos(51, 51) else pos(51, 48)
 
+        // Shared team target: ha bármelyik csapattag ENGAGE_RANGE-én belül van ellenség,
+        // mindenki ugyanazt a targetet kapja → focus fire + együtt rohanja le
+        val sharedTarget = getSharedTeamTarget(gameplay)
+
         // Hybrid: gyógyít ÉS lő + csapat közelében marad
         if (creep.canHeal()) {
             healAllyIfNeeded(creep, gameplay)
-            // Hybrid is lő ha van célpont range-en belül
-            val hybridTarget = getFocusTarget(creep, gameplay)
-            if (hybridTarget != null) {
-                val dist = creep.getRangeTo(hybridTarget)
-                shootBest(creep, gameplay)
+            if (sharedTarget != null) {
+                val dist = creep.getRangeTo(sharedTarget)
+                shootBestAt(creep, sharedTarget, gameplay)
                 when {
                     dist < OPTIMAL_RANGE -> kiteFromHostiles(creep, gameplay.getHostileCreeps(), gameplay)
                     dist == OPTIMAL_RANGE -> { /* ideális táv, csak lőj */ }
-                    else -> creep.moveTo(hybridTarget)
+                    else -> creep.moveTo(sharedTarget)
                 }
-            } else {
-                val activeTarget = getTeamEngageTarget(gameplay)
-                if (activeTarget != null && creep.getRangeTo(activeTarget) > OPTIMAL_RANGE) {
-                    creep.moveTo(activeTarget)
-                } else if (creep.getRangeTo(rally) > RALLY_REACHED_RANGE) {
-                    creep.moveTo(rally)
-                }
+            } else if (creep.getRangeTo(rally) > RALLY_REACHED_RANGE) {
+                creep.moveTo(rally)
             }
             return
         }
 
-        // Saját célpont
-        val target = getFocusTarget(creep, gameplay)
-
-        if (target != null) {
-            val dist = creep.getRangeTo(target)
-            shootBest(creep, gameplay)
-
+        // Shared target van → mindenki rámenegy és lő
+        if (sharedTarget != null) {
+            val dist = creep.getRangeTo(sharedTarget)
+            shootBestAt(creep, sharedTarget, gameplay)
             when {
-                dist <= KITE_DANGER_RANGE -> {
-                    // Kite: fusson a spawn felé
-                    kiteFromHostiles(creep, gameplay.getHostileCreeps(), gameplay)
-                }
-                else -> {
-                    // Távolabb van → közeledj és lőj
-                    creep.moveTo(target)
-                }
+                dist <= KITE_DANGER_RANGE -> kiteFromHostiles(creep, gameplay.getHostileCreeps(), gameplay)
+                else -> creep.moveTo(sharedTarget)
             }
             return
         }
 
-        // Nincs saját target – ha más harcol, menj a csata felé
-        val activeTarget = getTeamEngageTarget(gameplay)
-        if (activeTarget != null) {
-            creep.moveTo(activeTarget)
-            return
-        }
-
-        // Senki nem harcol – rally
+        // Senki nem lát ellenséget – rally
         if (creep.getRangeTo(rally) > RALLY_REACHED_RANGE) {
             creep.moveTo(rally)
         } else {
@@ -117,50 +98,42 @@ object CombatBehavior {
         creep.moveTo(pos(fleeX, fleeY))
     }
 
-    // ── Csapat aktív célpontja ────────────────────────────────────────────────
-
-    /**
-     * Ha bármelyik saját harcos harcol, visszaadja a legközelebbi ellenséges
-     * creep pozícióját (nem a harcoló creep pozícióját – az mozog).
-     * Így a csatlakozó creepek egy stabil célra tartanak.
-     */
-    private fun getTeamEngageTarget(gameplay: Gameplay): screeps.api.Position? {
-        val fighters = gameplay.myCreeps.filter {
-            it.role == Role.COMBAT_RANGER || it.role == Role.COMBAT_LIGHT_RANGER || it.role == Role.COMBAT_CHEAP_RANGER || it.role == Role.COMBAT_SELF_HEAL_RANGER || it.role == Role.COMBAT_HYBRID
-        }
-        val enemies = gameplay.getHostileCreeps()
-        for (fighter in fighters) {
-            val nearEnemy = enemies.filter { fighter.getRangeTo(it) <= ENGAGE_RANGE }
-                .minByOrNull { fighter.getRangeTo(it) }
-            if (nearEnemy != null) return pos(nearEnemy.x, nearEnemy.y)
-        }
-        return null
-    }
-
     // ── Focus fire ────────────────────────────────────────────────────────────
 
     /**
-     * Lövés: ha 3+ ellenség van OPTIMAL_RANGE-en belül → rangedMassAttack (több DPS).
-     * Egyébként focus fire a legkevesebb HP-s célra.
+     * Lövés az explicit target-re – mindig rangedAttack, sosem mass attack.
+     * Mass attack csak akkor érne többet ha 3+ egymás melletti ellenség van,
+     * de egyetlen cél ellen töredéke a sima lövés DPS-ének.
      */
-    private fun shootBest(creep: Creep, gameplay: Gameplay) {
+    private fun shootBestAt(creep: Creep, target: Creep, gameplay: Gameplay) {
         if (!creep.canRangedAttack()) return
-        // Ha 2+ saját creep is közel van az ellenséghez → mass attack több DPS-t ad
-        val target = getFocusTarget(creep, gameplay) ?: return
-        val alliesNearTarget = gameplay.myCreeps.count { ally ->
-            ally.id != creep.id && ally.getRangeTo(target) <= OPTIMAL_RANGE
-        }
-        if (alliesNearTarget >= 2) {
-            creep.rangedMassAttack()
-        } else {
-            creep.rangedAttack(target)
-        }
+        creep.rangedAttack(target)
     }
 
-    private fun getFocusTarget(creep: Creep, gameplay: Gameplay): Creep? =
-        gameplay.getHostileCreeps()
-            .filter { creep.getRangeTo(it) <= ENGAGE_RANGE }
-            .minWithOrNull(compareBy({ it.hits }, { creep.getRangeTo(it) }))
+    /**
+     * Shared team target: ha bármelyik saját harcos ENGAGE_RANGE-én belül lát ellenséget,
+     * visszaadja a legkevesebb HP-s (döntetlennél legközelebb lévő) ellenséget.
+     * Így az összes creep ugyanarra a targetre fókuszál.
+     */
+    private fun getSharedTeamTarget(gameplay: Gameplay): Creep? {
+        val fighters = gameplay.myCreeps.filter {
+            it.role == Role.COMBAT_RANGER || it.role == Role.COMBAT_LIGHT_RANGER ||
+                    it.role == Role.COMBAT_CHEAP_RANGER || it.role == Role.COMBAT_SELF_HEAL_RANGER ||
+                    it.role == Role.COMBAT_HYBRID
+        }
+        val enemies = gameplay.getHostileCreeps()
+        // Összegyűjti az összes ellenséget akit bármelyik harcos lát
+        val visible = enemies.filter { enemy ->
+            fighters.any { fighter -> fighter.getRangeTo(enemy) <= ENGAGE_RANGE }
+        }
+        if (visible.isEmpty()) return null
+        // Legkevesebb HP, döntetlennél a csapat centroidjától legközelebb
+        val avgX = fighters.map { it.x }.average()
+        val avgY = fighters.map { it.y }.average()
+        return visible.minWithOrNull(compareBy({ it.hits }, {
+            val dx = it.x - avgX; val dy = it.y - avgY; dx * dx + dy * dy
+        }))
+    }
 
     // ── Heal ──────────────────────────────────────────────────────────────────
 
